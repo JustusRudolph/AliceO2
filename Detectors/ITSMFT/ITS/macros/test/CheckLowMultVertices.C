@@ -13,9 +13,11 @@
 #include <vector>
 #include <set>
 #include <unordered_map>
+#include <string>
 
 #include <TFile.h>
 #include <TTree.h>
+#include <TNtuple.h>
 
 // #include "CommonUtils/RootSerializableKeyValueStore.h"
 #include "Framework/Logger.h"
@@ -187,17 +189,16 @@ o2::MCCompLabel getMainLabel(std::vector<o2::MCCompLabel>& labs)
   return lab;
 }
 
-void CheckVertices(const int dumprof = -1, std::string path = "temp/",
-                   std::string tracfile = "o2trac_its.root",
-                   std::string clusfile = "o2clus_its.root",
-                   std::string kinefile = "sgn_1_Kine.root")
+std::vector<int> CheckVerticesSingle(
+  const int dumprof = -1, std::string path = "exp300-0-0_1-0.05/lowMultBeamDistCut-0/",
+  std::string tracfile = "o2trac_its.root", std::string clusfile = "o2clus_its.root",
+  std::string kinefile = "sgn_1_Kine.root")
 {
   using Vertex = o2::dataformats::Vertex<o2::dataformats::TimeStamp<int>>;
   using namespace o2::dataformats;
   using namespace o2::itsmft;
   using namespace o2::its;
 
-  kinefile = "o2sim_Kine.root";
   // Geometry
   o2::base::GeometryManager::loadGeometry(path.data());
   auto gman = o2::its::GeometryTGeo::Instance();
@@ -244,6 +245,7 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
   std::vector<std::array<double, 3>> simVerts;
   int prev_eventID = 0;
   std::map<int, int> nonReconstructedVertices;  // evtID (key) : nContributors (value)
+  //int nFakes = 0;  // number of fake reconstructed vertices
   for (auto n{0}; n < nev; ++n) {
     mcTree->GetEvent(n);
     info[n].resize(mcArr->size());
@@ -338,6 +340,7 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
       for (int iVertex{verStartIdx}; iVertex < verStartIdx + verSize; ++iVertex, ++vertCounter) {
         auto vert = recVerArr->at(iVertex);
         rofinfo[iRecord].recoVerts.push_back(vert);
+        
         for (int ic{0}; ic < vert.getNContributors(); ++ic, ++contLabIdx) {
           rofinfo[iRecord].vertLabels[vertCounter].push_back(recLabelsArr->at(contLabIdx));
           // std::cout << "Pushed " << rofinfo[iRecord].vertLabels[vertCounter].back() << " at position " << rofinfo[iRecord].vertLabels[vertCounter].size() << std::endl;
@@ -367,7 +370,7 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
             nonReconstructedVertices.erase( rof.eventIds[j] );
         }
       }
-      if (rof.recoeff < 1) rof.print();
+      //rof.print();
     }
   } else {
     rofinfo[dumprof].uniqeff();
@@ -377,11 +380,13 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
     nvt += rofinfo[dumprof].recoVerts.size();
     nevts += rofinfo[dumprof].simVerts.size();
   }
-  int lowMultClusterContributorCut = 3;  // under this we have a low mult event
+  int lowMultClusterContributorCut = 16;  // under this we have a low mult event
   // which low mult vertices did we have?
   auto vertIt = nonReconstructedVertices.begin();
-  unsigned int nZeros = 0;  // number of zero track events
+  int nZeros = 0;  // number of zero track events
+  std::cout << "get here?";
   while (vertIt != nonReconstructedVertices.end()) {
+    std::cout << "Numbers of tracks from vertex: " << vertIt->second << "\n";
     if (vertIt->second >= lowMultClusterContributorCut) {
       vertIt = nonReconstructedVertices.erase(vertIt);  // erase and move to next
     } else {
@@ -404,5 +409,32 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
     vertIt++;
   }
   
+  return {(int) nonReconstructedVertices.size(), nZeros};
+}
+
+void CheckLowMultVertices(
+  const int dumprof = -1, const float min=0, const float max=0, const float step_size = 0.1,
+  std::string parent_dir = "exp100-0-1-0_05/", std::string tracfile = "o2trac_its.root",
+  std::string clusfile = "o2clus_its.root", std::string kinefile = "sgn_1_Kine.root")
+{
+  int nSteps = (int) ((max - min) / step_size) + 1;
+  
+  TNtuple* nonRecoFullTuple = new TNtuple("nonRecoInfo", "Information of non reconstructed events",
+                                          "lowMultBeamDistCut:nNonReco:nZeroTrackEvents");
+  
+  //TTree* recoInfo = new TTree("recoInfo", "Information of Reconstruction");
+  std::cout << "anything here?";
+  unsigned int iterCount = 0;
+  for (float curr=min; curr <= max; curr+=step_size, iterCount++ ) {
+    std::string path = parent_dir + "lowMultBeamDistCut-" + std::to_string(iterCount) + "/";
+    std::vector<int> nonRecodInfo = CheckVerticesSingle(dumprof, path, tracfile, clusfile, kinefile);
+    nonRecoFullTuple->Fill(curr, nonRecodInfo[0], nonRecodInfo[1]);
+  }
+
+  TFile* nonRecoOutFile = new TFile((parent_dir + "metadata.root").c_str(), "RECREATE", "Metadata");
+  nonRecoFullTuple->Write();
+
+  nonRecoOutFile->Write();
+  nonRecoOutFile->Close();
   
 }
