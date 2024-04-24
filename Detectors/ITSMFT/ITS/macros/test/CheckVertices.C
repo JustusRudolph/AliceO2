@@ -125,6 +125,7 @@ void RofInfo::print()
 void RofInfo::uniqeff()
 {
   int c{0};
+  int nFakes{0};
   int current{-42};
   std::sort(parts.begin(), parts.end(), [](ParticleInfo& lp, ParticleInfo& rp) { return lp.lab.getEventID() > rp.lab.getEventID(); }); // sorting at this point should be harmless.
   for (auto& p : parts) {
@@ -138,6 +139,7 @@ void RofInfo::uniqeff()
   std::set<int> uniqueRecoVertIDs;
   for (size_t iV{0}; iV < vertLabels.size(); ++iV) {
     auto label = getMainLabel(vertLabels[iV]);
+    if (!label.isSet()) nFakes++;  // unset label means unmatched
     uniqueRecoVertIDs.insert(label.getEventID());
     for (size_t evId{0}; evId < eventIds.size(); ++evId) {
       if (eventIds[evId] == label.getEventID() && !usedIds[evId]) {
@@ -148,7 +150,7 @@ void RofInfo::uniqeff()
     }
   }
   recoeff = (float)c / (float)eventIds.size();
-  purity = (float)c / (float)vertLabels.size();
+  purity = 1 - (nFakes / (float)vertLabels.size());
   duplRate = 1. - (float)uniqueRecoVertIDs.size() / (float)vertLabels.size();
 }
 
@@ -197,7 +199,7 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
   using namespace o2::itsmft;
   using namespace o2::its;
 
-  kinefile = "o2sim_Kine.root";
+  //kinefile = "o2sim_Kine.root";
   // Geometry
   o2::base::GeometryManager::loadGeometry(path.data());
   auto gman = o2::its::GeometryTGeo::Instance();
@@ -299,7 +301,6 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
     }
   }
   //return;
-
   for (size_t evt{0}; evt < info.size(); ++evt) {
     auto& evInfo = info[evt];
     int ntrackable{0};
@@ -367,7 +368,7 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
             nonReconstructedVertices.erase( rof.eventIds[j] );
         }
       }
-      if (rof.recoeff < 1) rof.print();
+      rof.print();
     }
   } else {
     rofinfo[dumprof].uniqeff();
@@ -377,7 +378,9 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
     nvt += rofinfo[dumprof].recoVerts.size();
     nevts += rofinfo[dumprof].simVerts.size();
   }
-  int lowMultClusterContributorCut = 3;  // under this we have a low mult event
+  float totalEff = 1. - (float) nonReconstructedVertices.size() / (float) simVerts.size();
+
+  int lowMultClusterContributorCut = 16;  // under this we have a low mult event
   // which low mult vertices did we have?
   auto vertIt = nonReconstructedVertices.begin();
   unsigned int nZeros = 0;  // number of zero track events
@@ -394,7 +397,8 @@ void CheckVertices(const int dumprof = -1, std::string path = "temp/",
   LOGP(info, "Summary:");
   LOGP(info, "Found {} vertices in {} usable out of {} simulated", nvt, nevts, simVerts.size());
   LOGP(info, "Average good vertexing efficiency: {}%", (addeff / (float)nrofSimFilled) * 100);
-  LOGP(info, "Average vertexing purity on ROF basis: {}%", (addPur / (float)nrofRecoFilled) * 100);  
+  LOGP(info, "Fraction of vertices reconstructed (not necessarily same ROF): {}%", totalEff*100);
+  LOGP(info, "Average total vertexing purity: {}%", (addPur / (float)nrofRecoFilled) * 100);
   LOGP(info, "{} not reconstructed low multiplicity events, {} of which are zero.",
        nonReconstructedVertices.size(), nZeros );
   

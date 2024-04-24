@@ -127,6 +127,7 @@ void RofInfo::print()
 void RofInfo::uniqeff()
 {
   int c{0};
+  int nFakes{0};
   int current{-42};
   std::sort(parts.begin(), parts.end(), [](ParticleInfo& lp, ParticleInfo& rp) { return lp.lab.getEventID() > rp.lab.getEventID(); }); // sorting at this point should be harmless.
   for (auto& p : parts) {
@@ -140,6 +141,7 @@ void RofInfo::uniqeff()
   std::set<int> uniqueRecoVertIDs;
   for (size_t iV{0}; iV < vertLabels.size(); ++iV) {
     auto label = getMainLabel(vertLabels[iV]);
+    if (!label.isSet()) nFakes++;  // unset label means unmatched
     uniqueRecoVertIDs.insert(label.getEventID());
     for (size_t evId{0}; evId < eventIds.size(); ++evId) {
       if (eventIds[evId] == label.getEventID() && !usedIds[evId]) {
@@ -150,7 +152,7 @@ void RofInfo::uniqeff()
     }
   }
   recoeff = (float)c / (float)eventIds.size();
-  purity = (float)c / (float)vertLabels.size();
+  purity = 1 - (nFakes / (float)vertLabels.size());
   duplRate = 1. - (float)uniqueRecoVertIDs.size() / (float)vertLabels.size();
 }
 
@@ -189,7 +191,7 @@ o2::MCCompLabel getMainLabel(std::vector<o2::MCCompLabel>& labs)
   return lab;
 }
 
-std::vector<int> CheckVerticesSingle(
+std::vector<float> CheckVerticesSingle(
   const int dumprof = -1, std::string path = "exp300-0-0_1-0.05/lowMultBeamDistCut-0/",
   std::string tracfile = "o2trac_its.root", std::string clusfile = "o2clus_its.root",
   std::string kinefile = "sgn_1_Kine.root")
@@ -244,8 +246,7 @@ std::vector<int> CheckVerticesSingle(
   std::vector<std::vector<ParticleInfo>> info(nev);
   std::vector<std::array<double, 3>> simVerts;
   int prev_eventID = 0;
-  std::map<int, int> nonReconstructedVertices;  // evtID (key) : nContributors (value)
-  //int nFakes = 0;  // number of fake reconstructed vertices
+  std::map<int, std::tuple<bool, int>> verticesRecoInfo;  // evtID (key) : {wasRecod, nContributors} (value)
   for (auto n{0}; n < nev; ++n) {
     mcTree->GetEvent(n);
     info[n].resize(mcArr->size());
@@ -260,7 +261,7 @@ std::vector<int> CheckVerticesSingle(
       info[n][mcI].isPrimary = part.isPrimary();
     }
     simVerts.push_back({eventHeader->GetX(), eventHeader->GetY(), eventHeader->GetZ()});
-    nonReconstructedVertices.insert({(int) eventHeader->GetEventID(), 0});
+    verticesRecoInfo.insert({(int) eventHeader->GetEventID(), {false, 0}});
 
     if ((eventHeader->GetEventID() - prev_eventID) != 1)
       std::cout << "Event: " << eventHeader->GetEventID() << " not properly configured.\n";
@@ -317,7 +318,7 @@ std::vector<int> CheckVerticesSingle(
           bool fake;
           part.lab.get(trackID, evID, srcID, fake);
           rofinfo[part.rofs[0]].simVerts[evID] = simVerts[evID];
-          nonReconstructedVertices[evID]++;
+          std::get<1>(verticesRecoInfo[evID])++;  // increment number of contributors
         }
       }
     }
@@ -350,7 +351,8 @@ std::vector<int> CheckVerticesSingle(
   }
   // Epilog
   LOGP(info, "ROF inspection summary");
-  size_t nvt{0}, nevts{0}, nrofSimFilled{0}, nrofRecoFilled{0};
+  size_t nvt{0}, nevts{0}, nrofSimFilled{0}, nrofRecoFilled{0}, nRecodOneRofLate{0},
+         nRecodOneRofEarly{0}, nReco{0}, nRecoLowMult{0}, nLowMult{0};
   float addeff{0}, addPur{0};
   if (dumprof < 0) {
     for (size_t iROF{0}; iROF < rofinfo.size(); ++iROF) {
@@ -365,9 +367,22 @@ std::vector<int> CheckVerticesSingle(
       if (rof.recoVerts.size()) {
         addPur += rof.purity;
         nrofRecoFilled++;
-        for (int j = 0; j < rof.eventIds.size(); j++) {  // get rid of vertices that were reco-d
+        for (int j = 0; j < rof.eventIds.size(); j++) {
           if (rof.usedIds[j])  // was reconstructed
-            nonReconstructedVertices.erase( rof.eventIds[j] );
+            std::get<0>(verticesRecoInfo[ rof.eventIds[j] ] ) = true;
+        }
+      }
+      for (auto recoVertLabels : rof.vertLabels) {
+        int recoEvtId = getMainLabel(recoVertLabels).getEventID();
+        if (iROF) {  // only check previous ROF if not the first ROF
+          for (auto simVert : rofinfo[iROF - 1].simVerts) {
+            if (recoEvtId == simVert.first) nRecodOneRofLate++;
+          }
+        }
+        if (iROF < (rofinfo.size() - 1)) {  // only check next ROF if not the last ROF
+          for (auto simVert : rofinfo[iROF + 1].simVerts) {
+            if (recoEvtId == simVert.first) nRecodOneRofEarly++;
+          }
         }
       }
       //rof.print();
@@ -380,61 +395,60 @@ std::vector<int> CheckVerticesSingle(
     nvt += rofinfo[dumprof].recoVerts.size();
     nevts += rofinfo[dumprof].simVerts.size();
   }
+
   int lowMultClusterContributorCut = 16;  // under this we have a low mult event
   // which low mult vertices did we have?
-  auto vertIt = nonReconstructedVertices.begin();
+  auto vertIt = verticesRecoInfo.begin();
   int nZeros = 0;  // number of zero track events
-  std::cout << "get here?";
-  while (vertIt != nonReconstructedVertices.end()) {
-    std::cout << "Numbers of tracks from vertex: " << vertIt->second << "\n";
-    if (vertIt->second >= lowMultClusterContributorCut) {
-      vertIt = nonReconstructedVertices.erase(vertIt);  // erase and move to next
-    } else {
-      if (!(vertIt->second)) nZeros++;  // check if zero track event
-      vertIt++;
+  while (vertIt != verticesRecoInfo.end()) {
+    if (std::get<1>(vertIt->second) < lowMultClusterContributorCut) {
+      if (std::get<0>(vertIt->second)) {  // was reconstructed and is low mult
+        nRecoLowMult++;
+      }
+      nLowMult++;
     }
+    nReco += std::get<0>(vertIt->second);  // if reconstructed, add 1
+    vertIt++;
   }
+  float totalEff = (float) nReco / (float) simVerts.size();
 
 
   LOGP(info, "Summary:");
   LOGP(info, "Found {} vertices in {} usable out of {} simulated", nvt, nevts, simVerts.size());
   LOGP(info, "Average good vertexing efficiency: {}%", (addeff / (float)nrofSimFilled) * 100);
-  LOGP(info, "Average vertexing purity on ROF basis: {}%", (addPur / (float)nrofRecoFilled) * 100);  
+  LOGP(info, "Fraction of vertices reconstructed (not necessarily same ROF): {}%", totalEff*100);
+  LOGP(info, "Average total vertexing purity: {}%", (addPur / (float)nrofRecoFilled) * 100);    
   LOGP(info, "{} not reconstructed low multiplicity events, {} of which are zero.",
-       nonReconstructedVertices.size(), nZeros );
+       (nLowMult - nRecoLowMult), nZeros );
   
-  vertIt = nonReconstructedVertices.begin();
-  while ( vertIt != nonReconstructedVertices.end() ) {
-    // std::cout << "Event " << vertIt->first << " with " << vertIt->second << " track contributor(s).\n";
-    vertIt++;
-  }
   
-  return {(int) nonReconstructedVertices.size(), nZeros};
+  return {(float) nLowMult, (float) nRecoLowMult, (float) nZeros, (float) nvt, totalEff,
+          addPur / (float)nrofRecoFilled, (float)nRecodOneRofEarly, (float)nRecodOneRofLate};
 }
 
 void CheckLowMultVertices(
-  const int dumprof = -1, const float min=0, const float max=0, const float step_size = 0.1,
+  const int dumprof = -1, const float min=0.1, const float max=0.1, const float step_size = 0.05,
   std::string parent_dir = "exp100-0-1-0_05/", std::string tracfile = "o2trac_its.root",
   std::string clusfile = "o2clus_its.root", std::string kinefile = "sgn_1_Kine.root")
 {
   int nSteps = (int) ((max - min) / step_size) + 1;
   
-  TNtuple* nonRecoFullTuple = new TNtuple("nonRecoInfo", "Information of non reconstructed events",
-                                          "lowMultBeamDistCut:nNonReco:nZeroTrackEvents");
+  TNtuple* recoInfoFullTuple = new TNtuple("nonRecoInfo", "Information of non reconstructed events",
+                                          "lowMultBeamDistCut:nLowMult:nRecoLowMult:nZeroTrackEvents:"
+                                          "nRecoTot:eff:purity:nRecodOneRofEarly:nRecodOneRofLate");
   
-  //TTree* recoInfo = new TTree("recoInfo", "Information of Reconstruction");
-  std::cout << "anything here?";
   unsigned int iterCount = 0;
   for (float curr=min; curr <= max; curr+=step_size, iterCount++ ) {
     std::string path = parent_dir + "lowMultBeamDistCut-" + std::to_string(iterCount) + "/";
-    std::vector<int> nonRecodInfo = CheckVerticesSingle(dumprof, path, tracfile, clusfile, kinefile);
-    nonRecoFullTuple->Fill(curr, nonRecodInfo[0], nonRecodInfo[1]);
+    std::vector<float> recoInfo = CheckVerticesSingle(dumprof, path, tracfile, clusfile, kinefile);
+    recoInfoFullTuple->Fill(curr, recoInfo[0], recoInfo[1], recoInfo[2], recoInfo[3], recoInfo[4],
+                            recoInfo[5], recoInfo[6], recoInfo[7]);
   }
 
-  TFile* nonRecoOutFile = new TFile((parent_dir + "metadata.root").c_str(), "RECREATE", "Metadata");
-  nonRecoFullTuple->Write();
+  TFile* recoOutFile = new TFile((parent_dir + "reco_metadata.root").c_str(), "RECREATE", "Metadata");
+  recoInfoFullTuple->Write();
 
-  nonRecoOutFile->Write();
-  nonRecoOutFile->Close();
+  recoOutFile->Write();
+  recoOutFile->Close();
   
 }
