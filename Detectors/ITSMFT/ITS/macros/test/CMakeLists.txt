@@ -80,6 +80,13 @@ o2_add_test_root_macro(CheckVertices.C
                                              O2::DataFormatsITSMFT
                        LABELS its)
 
+o2_add_test_root_macro(CheckLowMultVertices.C
+                       PUBLIC_LINK_LIBRARIES O2::SimulationDataFormat
+                                             O2::ITSBase
+                                             O2::DataFormatsITS
+                                             O2::DataFormatsITSMFT
+                       LABELS its)
+
 o2_add_test_root_macro(DisplayTrack.C
                        PUBLIC_LINK_LIBRARIES O2::ITSBase
                                              O2::DataFormatsITSMFT
