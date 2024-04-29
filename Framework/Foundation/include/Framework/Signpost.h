@@ -202,8 +202,6 @@ struct _o2_log_t {
 
 bool _o2_lock_free_stack_push(_o2_lock_free_stack& stack, const int& value, bool spin = false);
 bool _o2_lock_free_stack_pop(_o2_lock_free_stack& stack, int& value, bool spin = false);
-//_o2_signpost_id_t _o2_signpost_id_generate_local(_o2_log_t* log);
-//_o2_signpost_id_t _o2_signpost_id_make_with_pointer(_o2_log_t* log, void* pointer);
 void* _o2_log_create(char const* name, int stacktrace);
 void _o2_signpost_event_emit(_o2_log_t* log, _o2_signpost_id_t id, char const* name, char const* const format, ...);
 void _o2_signpost_interval_begin(_o2_log_t* log, _o2_signpost_id_t id, char const* name, char const* const format, ...);
@@ -224,7 +222,7 @@ inline _o2_signpost_id_t _o2_signpost_id_generate_local(_o2_log_t* log)
 
 // Generate a unique id for a signpost. Do not use this directly, use O2_SIGNPOST_ID_FROM_POINTER instead.
 // Notice that this will fail for pointers to bytes as it might overlap with the id above.
-inline _o2_signpost_id_t _o2_signpost_id_make_with_pointer(_o2_log_t* log, void* pointer)
+inline _o2_signpost_id_t _o2_signpost_id_make_with_pointer(_o2_log_t* log, void const* pointer)
 {
   assert(((int64_t)pointer & 1) != 1);
   _o2_signpost_id_t uniqueId{(int64_t)pointer};
@@ -524,7 +522,7 @@ void o2_debug_log_set_stacktrace(_o2_log_t* log, int stacktrace)
   } else if (O2_BUILTIN_UNLIKELY(private_o2_log_##log->stacktrace)) {                                               \
     _o2_signpost_event_emit(private_o2_log_##log, id, name, remove_engineering_type(format).data(), ##__VA_ARGS__); \
   }                                                                                                                 \
-  O2_RAW_LOG_RAW(warn, ##__VA_ARGS__);                                                                              \
+  O2_LOG_MACRO_RAW(warn, format, ##__VA_ARGS__);                                                                    \
 })
 
 #define O2_SIGNPOST_START(log, id, name, format, ...)                                                                   \

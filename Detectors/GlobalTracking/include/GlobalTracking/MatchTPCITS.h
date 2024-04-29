@@ -372,6 +372,8 @@ class MatchTPCITS
   ///< set Bunch filling and init helpers for validation by BCs
   void setBunchFilling(const o2::BunchFilling& bf);
 
+  void setNHBPerTF(int n) { mNHBPerTF = n; }
+
   ///< ITS readout mode
   void setITSTriggered(bool v) { mITSTriggered = v; }
   bool isITSTriggered() const { return mITSTriggered; }
@@ -563,6 +565,9 @@ class MatchTPCITS
   float mBz = 0;                        ///< nominal Bz
   int mTFCount = 0;                     ///< internal TF counter for debugger
   int mNThreads = 1;                    ///< number of OMP threads
+  int mNHBPerTF = 0;
+  int mNTPCOccBinLength = 0; ///< TPC occ. histo bin length in TBs
+  float mNTPCOccBinLengthInv;
   o2::InteractionRecord mStartIR{0, 0}; ///< IR corresponding to the start of the TF
 
   ///========== Parameters to be set externally, e.g. from CCDB ====================
@@ -636,6 +641,7 @@ class MatchTPCITS
   gsl::span<const o2::ft0::RecPoints> mFITInfo;             ///< optional input FIT info span
 
   gsl::span<const unsigned char> mTPCRefitterShMap; ///< externally set TPC clusters sharing map
+  gsl::span<const unsigned int> mTPCRefitterOccMap; ///< externally set TPC clusters occupancy map
 
   const o2::itsmft::TopologyDictionary* mITSDict{nullptr}; // cluster patterns dictionary
 
@@ -667,7 +673,7 @@ class MatchTPCITS
   std::vector<o2::MCCompLabel> mTPCLblWork; ///< TPC track labels
   std::vector<o2::MCCompLabel> mITSLblWork; ///< ITS track labels
   std::vector<float> mWinnerChi2Refit; ///< vector of refitChi2 for winners
-
+  std::vector<float> mTBinClOcc;       ///< TPC occupancy histo: i-th entry is the integrated occupancy for ~1 orbit starting from the TB = i*mNTPCOccBinLength
   // ------------------------------
   std::vector<TPCABSeed> mTPCABSeeds; ///< pool of primary TPC seeds for AB
   ///< indices of selected track entries in mTPCWork (for tracks selected by AfterBurner)
