@@ -14,6 +14,7 @@
 #include <set>
 #include <unordered_map>
 #include <string>
+#include <bits/stdc++.h>  // for popcount
 
 #include <TFile.h>
 #include <TTree.h>
@@ -31,6 +32,7 @@
 #include "DataFormatsITSMFT/CompCluster.h"
 #include "DataFormatsITSMFT/ROFRecord.h"
 #include "DataFormatsITS/TrackITS.h"
+#include "ITSMFTSimulation/Hit.h"
 #endif
 #include "DataFormatsITSMFT/CompCluster.h"
 
@@ -56,22 +58,32 @@ struct ParticleInfo {
 };
 
 struct SimVertInfo {
-  int nContributors;  // (likely) number of tracklets associated to vertex
-  int nCells;         // number of cells associated to vertex
-  int nTracks;        // number of tracks (from mcArr)
-  bool wasRecod;      // whether the vertex was reconstructed
-  float x, y, z;      // position of the vertex
+  int nContributors;          // (likely) number of tracklets associated to vertex
+  int nCells;                 // number of cells associated to vertex
+  bool wasRecod;              // whether the vertex was reconstructed
+  float x, y, z;              // position of the vertex
+  std::map<int, int> nHits;   // number of hits associated to each trackID
 };
 
 struct RecoVertInfo {
   int eventID;        // ID of event (-1 if fake)
   int nContributors;  // (likely) number of cells associated to vertex
   float x, y, z;      // position of the vertex
+  int iROF;           // in which ROF this vertex was reco'd
+};
+
+struct GlobalRecoInfo {  // this is only really for lowMultBeamDistCut changes
+  int nLowMult;      // number of low mult events
+  int nRecoLowMult;  // number of reconstructed low mult events
+  int nZeros;        // number of zero track events
+  double globalEff;  // global (average) efficiency
+  double globalPur;  // global (average) purity
 };
 
 struct GlobalInfo {
+  GlobalRecoInfo globalRecoInfo;           // Info to compare lowMultBeamDistCuts for
+  std::vector<RecoVertInfo> recoVertInfo;  // Info on all reco'd vertices
   std::map<int, SimVertInfo> simVertInfo;  // Info on simVerts
-  std::vector<RecoVertInfo> recoVertInfo;  // Info on recoVerts
 };
 
 struct RofInfo {
@@ -149,7 +161,9 @@ void RofInfo::uniqeff()
   int c{0};
   int nFakes{0};
   int current{-42};
-  std::sort(parts.begin(), parts.end(), [](ParticleInfo& lp, ParticleInfo& rp) { return lp.lab.getEventID() > rp.lab.getEventID(); }); // sorting at this point should be harmless.
+   // sorting at this point should be harmless.
+   std::sort(parts.begin(), parts.end(),
+             [](ParticleInfo& lp, ParticleInfo& rp) {return lp.lab.getEventID() > rp.lab.getEventID(); });
   for (auto& p : parts) {
     if (p.lab.getEventID() != current) {
       eventIds.push_back(p.lab.getEventID());
@@ -167,9 +181,10 @@ void RofInfo::uniqeff()
       eventID = -1;
     }
     uniqueRecoVertIDs.insert(eventID);
-    for (size_t evId{0}; evId < eventIds.size(); ++evId) {
-      if (eventIds[evId] == label.getEventID() && !usedIds[evId]) {
-        usedIds[evId] = true;
+    for (size_t iEvID{0}; iEvID < eventIds.size(); ++iEvID) {
+      if (eventIds[iEvID] == label.getEventID() && !usedIds[iEvID]) {
+        usedIds[iEvID] = true;
+        globalInfo->simVertInfo[ eventIds[iEvID] ].wasRecod = true;
         ++c;
         break;
       }
@@ -215,10 +230,10 @@ o2::MCCompLabel getMainLabel(std::vector<o2::MCCompLabel>& labs)
   return lab;
 }
 
-std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
+GlobalInfo CheckVerticesSingle(
   const int dumprof = -1, std::string path = "exp300-0-0_1-0.05/lowMultBeamDistCut-0/",
-  std::string tracfile = "o2trac_its.root", std::string clusfile = "o2clus_its.root",
-  std::string kinefile = "sgn_1_Kine.root")
+  std::string tracfilePath = "o2trac_its.root", std::string clusfilePath = "o2clus_its.root",
+  std::string kinefilePath = "sgn_1_Kine.root", std::string itsHitFilePath = "o2sim_HitsITS.root")
 {
   using Vertex = o2::dataformats::Vertex<o2::dataformats::TimeStamp<int>>;
   using namespace o2::dataformats;
@@ -230,8 +245,8 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
   auto gman = o2::its::GeometryTGeo::Instance();
 
   // MC tracks and event header
-  TFile* file0 = TFile::Open((path + kinefile).data());
-  TTree* mcTree = (TTree*)gFile->Get("o2sim");
+  TFile* kineFile = TFile::Open((path + kinefilePath).data());
+  TTree* mcTree = (TTree*)kineFile->Get("o2sim");
   mcTree->SetBranchStatus("*", 0); // disable all branches
   mcTree->SetBranchStatus("MCEventHeader*", 1);
   mcTree->SetBranchStatus("MCTrack*", 1);
@@ -241,9 +256,15 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
   MCEventHeader* eventHeader = nullptr;
   mcTree->SetBranchAddress("MCEventHeader.", &eventHeader);
 
+  // MC Hits
+  TFile* itsHitFile = TFile::Open((path + itsHitFilePath).data());
+  TTree* hitTree = (TTree*)itsHitFile->Get("o2sim");
+  std::vector<o2::itsmft::Hit>* hitArr = nullptr;
+  hitTree->SetBranchAddress("ITSHit", &hitArr);
+
   // Clusters
-  TFile::Open((path + clusfile).data());
-  TTree* clusTree = (TTree*)gFile->Get("o2sim");
+  TFile* clusFile = TFile::Open((path + clusfilePath).data());
+  TTree* clusTree = (TTree*)clusFile->Get("o2sim");
   std::vector<CompClusterExt>* clusArr = nullptr;
   clusTree->SetBranchAddress("ITSClusterComp", &clusArr);
   std::vector<o2::itsmft::ROFRecord>* clusROFRecords = nullptr;
@@ -254,8 +275,8 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
   clusTree->SetBranchAddress("ITSClusterMCTruth", &clusLabArr);
 
   // Reconstructed vertices
-  TFile* recFile = TFile::Open((path + tracfile).data());
-  TTree* recTree = (TTree*)recFile->Get("o2sim");
+  TFile* tracFile = TFile::Open((path + tracfilePath).data());
+  TTree* recTree = (TTree*)tracFile->Get("o2sim");
 
   std::vector<Vertex>* recVerArr = nullptr;
   recTree->SetBranchAddress("Vertices", &recVerArr);
@@ -270,12 +291,20 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
   std::vector<std::vector<ParticleInfo>> info(nev);
   std::vector<std::array<double, 3>> simVerts;
   GlobalInfo globalInfo;
+  globalInfo.globalRecoInfo = {0, 0, 0, 0., 0.};  // initialise all to zero
   int prev_eventID = 0;
-  std::map<int, std::tuple<bool, int>> verticesRecoInfo;  // evtID (key) : {wasRecod, nContributors} (value)
   for (auto n{0}; n < nev; ++n) {
     mcTree->GetEvent(n);
+    hitTree->GetEvent(n);
     info[n].resize(mcArr->size());
-    // Event header
+    
+    simVerts.push_back({eventHeader->GetX(), eventHeader->GetY(), eventHeader->GetZ()});
+    globalInfo.simVertInfo.insert({(int) eventHeader->GetEventID() - 1,
+                                    SimVertInfo{ eventHeader->GetNPrim(), 0, false,
+                                                (float) eventHeader->GetX(),
+                                                (float) eventHeader->GetY(),
+                                                (float) eventHeader->GetZ(), {}}});
+    
     for (unsigned int mcI{0}; mcI < mcArr->size(); ++mcI) {
       auto part = mcArr->at(mcI);
       info[n][mcI].event = n;
@@ -283,23 +312,26 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
       info[n][mcI].pt = part.GetPt();
       info[n][mcI].phi = part.GetPhi();
       info[n][mcI].eta = part.GetEta();
-      info[n][mcI].isPrimary = part.isPrimary();
+      info[n][mcI].isPrimary = part.isPrimary();      
     }
-    simVerts.push_back({eventHeader->GetX(), eventHeader->GetY(), eventHeader->GetZ()});
-    globalInfo.simVertInfo.insert({(int) eventHeader->GetEventID() - 1,
-                                    SimVertInfo{ eventHeader->GetNPrim(), 0,
-                                                (int) mcArr->size(), false,
-                                                (float) eventHeader->GetX(),
-                                                (float) eventHeader->GetY(),
-                                                (float) eventHeader->GetZ()}});
-    verticesRecoInfo.insert({(int) eventHeader->GetEventID(), {false, 0}});
-
+    // now fill track info
+    std::map<int, int>* nHits_ptr = &(globalInfo.simVertInfo[eventHeader->GetEventID() - 1].nHits);
+    
+    for (int hitI = 0; hitI < hitArr->size(); hitI++) {
+      o2::itsmft::Hit hit = hitArr->at(hitI);
+      int trackID = hit.GetTrackID();
+      // find where trackID would fit in the map
+      std::map<int, int>::iterator lowerBoundTrackID = nHits_ptr->lower_bound(trackID);
+      // check if key already exist, then lowerBoundTrackID->first == trackID
+      if (lowerBoundTrackID != nHits_ptr->end() && lowerBoundTrackID->first == trackID)
+        lowerBoundTrackID->second++;
+      else  // key does not exist yet, set it and add a hit
+        nHits_ptr->insert(lowerBoundTrackID, std::pair<int, int>(trackID, 1));
+    }
     if ((eventHeader->GetEventID() - prev_eventID) != 1)
       std::cout << "Event: " << eventHeader->GetEventID() << " not properly configured.\n";
     prev_eventID = eventHeader->GetEventID();
   }
-  // std::cout << "Initially globalInfo size: " << globalInfo.simVertInfo.size() << std::endl;
-  //return;
 
   // Fill ROF info and complement MC info with cluster info
   std::vector<RofInfo> rofinfo;
@@ -351,8 +383,7 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
           bool fake;
           part.lab.get(trackID, evID, srcID, fake);
           rofinfo[part.rofs[0]].simVerts[evID] = simVerts[evID];
-          std::get<1>(verticesRecoInfo[evID])++;  // increment number of contributors
-          globalInfo.simVertInfo[evID].nCells++;
+          globalInfo.simVertInfo[evID].nCells++;  // increment number of contributors
         }
       }
     }
@@ -385,14 +416,13 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
           eventID = -1;
         }
         globalInfo.recoVertInfo.push_back(
-          RecoVertInfo{ eventID, vert.getNContributors(), vert.getX(), vert.getY(), vert.getZ() } );
+          RecoVertInfo{ eventID, vert.getNContributors(), vert.getX(), vert.getY(), vert.getZ(), 0 } );
       }
     }
   }
   // Epilog
   LOGP(info, "ROF inspection summary");
-  size_t nvt{0}, nevts{0}, nrofSimFilled{0}, nrofRecoFilled{0}, nRecodOneRofLate{0},
-         nRecodOneRofEarly{0}, nReco{0}, nRecoLowMult{0}, nLowMult{0};
+  size_t nvt{0}, nevts{0}, nrofSimFilled{0}, nrofRecoFilled{0};
   float addeff{0}, addPur{0};
   if (dumprof < 0) {
     for (size_t iROF{0}; iROF < rofinfo.size(); ++iROF) {
@@ -407,27 +437,6 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
       if (rof.recoVerts.size()) {
         addPur += rof.purity;
         nrofRecoFilled++;
-        for (int j = 0; j < rof.eventIds.size(); j++) {
-          if (rof.usedIds[j]) {  // was reconstructed
-            std::get<0>( verticesRecoInfo[ rof.eventIds[j] ] ) = true;
-            rof.globalInfo->simVertInfo[ rof.eventIds[j] ].wasRecod = true;
-            // std::cout << "Size of globalInfo: " << globalInfo.simVertInfo.size() << " and " <<
-            //    globalInfo.recoVertInfo.size() << std::endl;
-          }
-        }
-      }
-      for (auto recoVertLabels : rof.vertLabels) {
-        int recoEvtId = getMainLabel(recoVertLabels).getEventID();
-        if (iROF) {  // only check previous ROF if not the first ROF
-          for (auto simVert : rofinfo[iROF - 1].simVerts) {
-            if (recoEvtId == simVert.first) nRecodOneRofLate++;
-          }
-        }
-        if (iROF < (rofinfo.size() - 1)) {  // only check next ROF if not the last ROF
-          for (auto simVert : rofinfo[iROF + 1].simVerts) {
-            if (recoEvtId == simVert.first) nRecodOneRofEarly++;
-          }
-        }
       }
       // if (iROF) rof.print();
     }
@@ -440,46 +449,36 @@ std::tuple<std::vector<float>, GlobalInfo> CheckVerticesSingle(
     nevts += rofinfo[dumprof].simVerts.size();
   }
 
-  int lowMultClusterContributorCut = 16;  // under this we have a low mult event
-  // which low mult vertices did we have?
-  auto vertIt = verticesRecoInfo.begin();
-  int nZeros = 0;  // number of zero track events
-  while (vertIt != verticesRecoInfo.end()) {
-    if (std::get<1>(vertIt->second) < lowMultClusterContributorCut) {
-      nRecoLowMult += std::get<0>(vertIt->second);  // was reconstructed and is low mult
-      nLowMult++;
-      // also increment the number of zero track events
-      if ( std::get<1>(vertIt->second) == 0 ) nZeros++;
-    }
-    nReco += std::get<0>(vertIt->second);  // if reconstructed, add 1
-    vertIt++;
+  int nReco = 0;
+  for (const auto& [evtID, simVert] : globalInfo.simVertInfo) {
+    nReco += simVert.wasRecod;
+    globalInfo.globalRecoInfo.nZeros += simVert.nCells == 0;
+    globalInfo.globalRecoInfo.nLowMult += simVert.nCells < 16;  // define low mult as <16 here
+    globalInfo.globalRecoInfo.nRecoLowMult += (simVert.nCells < 16) * simVert.wasRecod;
   }
-  float totalEff = (float) nReco / (float) simVerts.size();
-
-  int nRecoSimVert = 0;
-  for (int i = 0; i < globalInfo.simVertInfo.size(); i++) {
-    nRecoSimVert += globalInfo.simVertInfo[i].wasRecod;
-  }
-  std::cout << "nReco: " << nReco << " and nReco in simVertInfo: " << nRecoSimVert << std::endl;
+  globalInfo.globalRecoInfo.globalEff = (double)nReco / simVerts.size();
+  globalInfo.globalRecoInfo.globalPur = (double)addPur / nrofRecoFilled;
 
   LOGP(info, "Summary:");
   LOGP(info, "Found {} vertices in {} usable out of {} simulated", nvt, nevts, simVerts.size());
   LOGP(info, "Average good vertexing efficiency: {}%", (addeff / (float)nrofSimFilled) * 100);
-  LOGP(info, "Fraction of vertices reconstructed (not necessarily same ROF): {}%", totalEff*100);
-  LOGP(info, "Average total vertexing purity: {}%", (addPur / (float)nrofRecoFilled) * 100);    
+  LOGP(info, "Fraction of vertices reconstructed (not necessarily same ROF): {}%",
+    globalInfo.globalRecoInfo.globalEff * 100);
+  LOGP(info, "Average total vertexing purity: {}%", globalInfo.globalRecoInfo.globalPur * 100);    
   LOGP(info, "{} not reconstructed low multiplicity events, {} of which are zero.",
-       (nLowMult - nRecoLowMult), nZeros );
+       (globalInfo.globalRecoInfo.nLowMult - globalInfo.globalRecoInfo.nRecoLowMult),
+       globalInfo.globalRecoInfo.nZeros );
   
   std::cout << "Size of globalInfo: " << globalInfo.simVertInfo.size() << " and " <<
                globalInfo.recoVertInfo.size() << std::endl;
 
-  // for (int i = 0; i < 100; i++) {
-  //   std::cout << "simVertInfo[" << i << "] = " << std::get<0>(globalInfo.simVertInfo[i])
-  //             << ", " << std::get<1>(globalInfo.simVertInfo[i]) << std::endl;
-  // }
-  return { {(float) nLowMult, (float) nRecoLowMult, (float) nZeros, (float) nvt, totalEff,
-          addPur / (float)nrofRecoFilled, (float)nRecodOneRofEarly, (float)nRecodOneRofLate},
-          globalInfo };
+  // close all files again
+  kineFile->Close();
+  itsHitFile->Close();
+  tracFile->Close();
+  clusFile->Close();
+
+  return globalInfo;
 }
 
 void CheckLowMultVertices(
@@ -487,22 +486,14 @@ void CheckLowMultVertices(
   const int nBatches = -1, std::string parent_dir = "exp100-0-1-0_05/", std::string tracfile = "o2trac_its.root",
   std::string clusfile = "o2clus_its.root", std::string kinefile = "sgn_1_Kine.root")
 {
-  int nSteps = (int) ((max - min) / step_size) + 1;
   // if nBatches is unset (-1), then use just parent dir. If set, the parent dir contains
   // a number (nBatches) of datasets, each just numbered from 0 to nBatches+1
   int nDatasets = (nBatches > 0) ? nBatches : 1;
   
   for (int batchNo = 0; batchNo < nDatasets; batchNo++) {
 
-    TNtuple* recoInfoFullTuple = new TNtuple("nonRecoInfo", "Information of non reconstructed events",
-                                            "lowMultBeamDistCut:nLowMult:nRecoLowMult:nZeroTrackEvents:"
-                                            "nRecoTot:eff:purity:nRecodOneRofEarly:nRecodOneRofLate");
-
-    TNtuple* simVertInfoTuple = new TNtuple("simVertInfo", "Information on simulated vertices",
-                                            "eventID:nContributors:nCells:wasReco:x:y:z");
-    TNtuple* recoVertInfoTuple = new TNtuple("recoVertInfo", "Information on reconstructed vertices",
-                                            "eventID:nContributors:x:y:z");
-    
+    std::vector<GlobalRecoInfo> globalRecoInfo;  // depends on lowMultBeamDistCut, i.e. will change
+    GlobalInfo finalInfo;  // only for the largest (best) lowMultBeamDistCut
     unsigned int iterCount = 0;
     for (float curr=min; curr <= max; curr+=step_size, iterCount++ ) {
       std::string path = parent_dir;
@@ -510,36 +501,61 @@ void CheckLowMultVertices(
       if (nBatches > 0) path += std::to_string(batchNo) + "/";
 
       path += "lowMultBeamDistCut-" + std::to_string(iterCount) + "/";
-      std::tuple<std::vector<float>, GlobalInfo> verticesInfo = CheckVerticesSingle(dumprof, path, tracfile, clusfile, kinefile);
-      std::vector<float> recoInfo = std::get<0>(verticesInfo);
-      GlobalInfo globalInfo = std::get<1>(verticesInfo);
-      // std::cout << "globalInfo simVertInfo address: " << &(globalInfo->simVertInfo) << std::endl;
-      std::cout << "Size of globalInfo: " << globalInfo.simVertInfo.size() << " and " <<
-                globalInfo.recoVertInfo.size() << std::endl;
-      recoInfoFullTuple->Fill(curr, recoInfo[0], recoInfo[1], recoInfo[2], recoInfo[3], recoInfo[4],
-                              recoInfo[5], recoInfo[6], recoInfo[7]);
+      GlobalInfo verticesInfo = CheckVerticesSingle(dumprof, path, tracfile, clusfile, kinefile);
 
+      std::cout << "Size of globalInfo: " << verticesInfo.simVertInfo.size() << " and " <<
+                verticesInfo.recoVertInfo.size() << std::endl;
+
+      // go to next batch if nothing was reco'd. This means that the dataset is "corrupt".
+      // If zero reconstructed vertices is expected as possible, then comment the next line.
+      if (verticesInfo.recoVertInfo.size() == 0) break;
+
+      globalRecoInfo.push_back(verticesInfo.globalRecoInfo);
       float eps = 1e-6;
-      if ((max - curr - eps) < 0) {  // write only the vertex info for the maximum
-        // std::cout << "Size of simVertInfo: " << globalInfo.simVertInfo.size() << std::endl;
-        for (const auto& [evtID, infoVec] : globalInfo.simVertInfo) {;
-          simVertInfoTuple->Fill( evtID, infoVec.nContributors, infoVec.nCells,
-                                  infoVec.wasRecod, infoVec.x, infoVec.y, infoVec.z);
-        }
-        for (auto rVinfo : globalInfo.recoVertInfo ) {
-          // std::cout << "going through rec of globalInfo: " << rVinfo[0] << " " << rVinfo[1] << std::endl;
-          recoVertInfoTuple->Fill( rVinfo.eventID, rVinfo.nContributors,
-                                   rVinfo.x, rVinfo.y, rVinfo.z );
-        }
-      }
+      if ((max - curr - eps) < 0) finalInfo = verticesInfo;
     }
-
+    // now create the output file and the corresponding tuples
     std::string outDir = parent_dir;
     if (nBatches > 0) outDir += std::to_string(batchNo) + "/";
     TFile* recoOutFile = new TFile((outDir + "reco_metadata.root").c_str(), "RECREATE", "Metadata");
-    recoInfoFullTuple->Write();
-    simVertInfoTuple->Write();
-    recoVertInfoTuple->Write();
+  
+    TNtuple* globalRecoInfoTuple = new TNtuple("lowMultRecoInfo", "Information wrt lowMultBeamDistCut",
+                                            "lowMultBeamDistCut:nLowMult:nRecoLowMult:nZeroTrackEvents:"
+                                            "eff:purity");
+
+    TNtuple* simVertInfoTuple = new TNtuple("simVertInfo", "Information on simulated vertices",
+                                            "eventID:nContributors:nCells:nTracks:wasReco:x:y:z");
+    TNtuple* trackInfoTuple = new TNtuple("trackInfo", "Information on simulated tracks",
+                                          "trackID:nHits");
+    TNtuple* recoVertInfoTuple = new TNtuple("recoVertInfo", "Information on reconstructed vertices",
+                                            "eventID:nContributors:x:y:z");
+
+    // First fill averages wrt lowMultBeamDistCut
+    for ( int iLMBDC = 0; iLMBDC < globalRecoInfo.size(); iLMBDC++ ) {
+      GlobalRecoInfo vInfo = globalRecoInfo[iLMBDC];
+      globalRecoInfoTuple->Fill( min + step_size*iLMBDC, vInfo.nLowMult, vInfo.nRecoLowMult,
+                                 vInfo.nZeros, vInfo.globalEff, vInfo.globalPur );
+    }
+    // Now fill totals for the largest (best) lowMultBeamDistCut
+    for (const auto& [evtID, sVInfo] : finalInfo.simVertInfo) {
+      simVertInfoTuple->Fill( evtID, sVInfo.nContributors, sVInfo.nCells, sVInfo.nHits.size(),
+                              sVInfo.wasRecod, sVInfo.x, sVInfo.y, sVInfo.z);
+      
+      // for each simVert, we have a lot of tracks/hits to fill...
+      for (auto nHitIt = sVInfo.nHits.begin(); nHitIt != sVInfo.nHits.end(); nHitIt++) {
+        trackInfoTuple->Fill((double) nHitIt->first, (double) nHitIt->second);
+      }
+    }
+    // lastly, fill reco's info
+    for (auto rVinfo : finalInfo.recoVertInfo ) {
+      recoVertInfoTuple->Fill( rVinfo.eventID, rVinfo.nContributors,
+                               rVinfo.x, rVinfo.y, rVinfo.z );
+    }
+    // write the tuples and file
+    // globalRecoInfoTuple->Write();
+    // simVertInfoTuple->Write();
+    // recoVertInfoTuple->Write();
+    // trackInfoTuple->Write();
 
     recoOutFile->Write();
     recoOutFile->Close();
