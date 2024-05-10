@@ -57,12 +57,19 @@ struct ParticleInfo {
   o2::MCCompLabel lab;
 };
 
+struct TrackInfo {
+  int nHits;
+  double pT;
+  double totMomentum;
+  int maxLayer;
+};
+
 struct SimVertInfo {
-  int nContributors;          // (likely) number of tracklets associated to vertex
-  int nCells;                 // number of cells associated to vertex
-  bool wasRecod;              // whether the vertex was reconstructed
-  float x, y, z;              // position of the vertex
-  std::map<int, int> nHits;   // number of hits associated to each trackID
+  int nContributors;                   // (likely) number of tracklets associated to vertex
+  int nCells;                          // number of cells associated to vertex
+  bool wasRecod;                       // whether the vertex was reconstructed
+  float x, y, z;                       // position of the vertex
+  std::map<int, TrackInfo> trackInfo;  // number of hits associated to each trackID
 };
 
 struct RecoVertInfo {
@@ -284,7 +291,6 @@ GlobalInfo CheckVerticesSingle(
   recTree->SetBranchAddress("VerticesROF", &recVerROFArr);
   std::vector<o2::MCCompLabel>* recLabelsArr = nullptr;
   recTree->SetBranchAddress("ITSVertexMCTruth", &recLabelsArr);
-
   // Process
   // Fill MC info
   auto nev{mcTree->GetEntriesFast()};
@@ -315,18 +321,25 @@ GlobalInfo CheckVerticesSingle(
       info[n][mcI].isPrimary = part.isPrimary();      
     }
     // now fill track info
-    std::map<int, int>* nHits_ptr = &(globalInfo.simVertInfo[eventHeader->GetEventID() - 1].nHits);
+    std::map<int, TrackInfo>* trInfoPtr = &(globalInfo.simVertInfo[eventHeader->GetEventID() - 1].trackInfo);
     
     for (int hitI = 0; hitI < hitArr->size(); hitI++) {
       o2::itsmft::Hit hit = hitArr->at(hitI);
       int trackID = hit.GetTrackID();
+      int layer = gman->getLayer( hit.GetDetectorID() );
       // find where trackID would fit in the map
-      std::map<int, int>::iterator lowerBoundTrackID = nHits_ptr->lower_bound(trackID);
+      std::map<int, TrackInfo>::iterator lowerBoundTrackID = trInfoPtr->lower_bound(trackID);
       // check if key already exist, then lowerBoundTrackID->first == trackID
-      if (lowerBoundTrackID != nHits_ptr->end() && lowerBoundTrackID->first == trackID)
-        lowerBoundTrackID->second++;
-      else  // key does not exist yet, set it and add a hit
-        nHits_ptr->insert(lowerBoundTrackID, std::pair<int, int>(trackID, 1));
+      if (lowerBoundTrackID != trInfoPtr->end() && lowerBoundTrackID->first == trackID)
+        lowerBoundTrackID->second.nHits++;
+        // also increment maxLayer if further out
+        if ( layer > lowerBoundTrackID->second.maxLayer)
+          lowerBoundTrackID->second.maxLayer = layer;
+      else  // key does not exist yet, set it, add a hit and the momentum
+        trInfoPtr->insert(
+          lowerBoundTrackID,
+          std::pair<int, TrackInfo>(
+            trackID, TrackInfo{1, mcArr->at(trackID).GetPt(), mcArr->at(trackID).GetP(), layer }));
     }
     if ((eventHeader->GetEventID() - prev_eventID) != 1)
       std::cout << "Event: " << eventHeader->GetEventID() << " not properly configured.\n";
@@ -526,7 +539,7 @@ void CheckLowMultVertices(
     TNtuple* simVertInfoTuple = new TNtuple("simVertInfo", "Information on simulated vertices",
                                             "eventID:nContributors:nCells:nTracks:wasReco:x:y:z");
     TNtuple* trackInfoTuple = new TNtuple("trackInfo", "Information on simulated tracks",
-                                          "trackID:nHits");
+                                          "trackID:nHits:pT:totP:maxLayer");
     TNtuple* recoVertInfoTuple = new TNtuple("recoVertInfo", "Information on reconstructed vertices",
                                             "eventID:nContributors:x:y:z");
 
@@ -538,12 +551,14 @@ void CheckLowMultVertices(
     }
     // Now fill totals for the largest (best) lowMultBeamDistCut
     for (const auto& [evtID, sVInfo] : finalInfo.simVertInfo) {
-      simVertInfoTuple->Fill( evtID, sVInfo.nContributors, sVInfo.nCells, sVInfo.nHits.size(),
+      simVertInfoTuple->Fill( evtID, sVInfo.nContributors, sVInfo.nCells, sVInfo.trackInfo.size(),
                               sVInfo.wasRecod, sVInfo.x, sVInfo.y, sVInfo.z);
       
       // for each simVert, we have a lot of tracks/hits to fill...
-      for (auto nHitIt = sVInfo.nHits.begin(); nHitIt != sVInfo.nHits.end(); nHitIt++) {
-        trackInfoTuple->Fill((double) nHitIt->first, (double) nHitIt->second);
+      for (auto nHitIt = sVInfo.trackInfo.begin(); nHitIt != sVInfo.trackInfo.end(); nHitIt++) {
+        trackInfoTuple->Fill( (double) nHitIt->first, (double) nHitIt->second.nHits,
+                              nHitIt->second.pT, nHitIt->second.totMomentum,
+                              nHitIt->second.maxLayer );
       }
     }
     // lastly, fill reco's info
