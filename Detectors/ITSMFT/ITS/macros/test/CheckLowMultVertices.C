@@ -42,11 +42,13 @@ struct ParticleInfo {
   int event;
   int pdg;
   float pt;
+  float pTot;
   float eta;
   float phi;
   int mother;
   int first;
-  unsigned short clusters = 0u;
+  int nClusters = 0;  // total number of clusters in track
+  unsigned short clusters = 0u;  // layers of clusters
   unsigned char isReco = 0u;
   unsigned char isFake = 0u;
   bool isPrimary = 0u;
@@ -55,13 +57,13 @@ struct ParticleInfo {
   std::array<int, 7> rofs = {-1, -1, -1, -1, -1, -1, -1}; /// readout frames of corresponding clusters
   o2::its::TrackITS track;
   o2::MCCompLabel lab;
-};
 
-struct TrackInfo {
-  int nHits;
-  double pT;
-  double totMomentum;
-  int maxLayer;
+  int getMaxLayer() {  // get the maximum layer which was hit
+    for (int maxLayer = 6; maxLayer >= 0; maxLayer--) {
+      if ( clusters >> maxLayer ) return maxLayer;
+    }
+    return -1;
+  }
 };
 
 struct SimVertInfo {
@@ -69,7 +71,6 @@ struct SimVertInfo {
   int nCells;                          // number of cells associated to vertex
   bool wasRecod;                       // whether the vertex was reconstructed
   float x, y, z;                       // position of the vertex
-  std::map<int, TrackInfo> trackInfo;  // number of hits associated to each trackID
 };
 
 struct RecoVertInfo {
@@ -88,9 +89,10 @@ struct GlobalRecoInfo {  // this is only really for lowMultBeamDistCut changes
 };
 
 struct GlobalInfo {
-  GlobalRecoInfo globalRecoInfo;           // Info to compare lowMultBeamDistCuts for
-  std::vector<RecoVertInfo> recoVertInfo;  // Info on all reco'd vertices
-  std::map<int, SimVertInfo> simVertInfo;  // Info on simVerts
+  GlobalRecoInfo globalRecoInfo;                        // Info to compare lowMultBeamDistCuts for
+  std::vector<RecoVertInfo> recoVertInfo;               // Info on all reco'd vertices
+  std::map<int, SimVertInfo> simVertInfo;               // Info on simVerts
+  std::vector<std::vector<ParticleInfo>> particleInfo;  // Info on particles
 };
 
 struct RofInfo {
@@ -240,7 +242,7 @@ o2::MCCompLabel getMainLabel(std::vector<o2::MCCompLabel>& labs)
 GlobalInfo CheckVerticesSingle(
   const int dumprof = -1, std::string path = "exp300-0-0_1-0.05/lowMultBeamDistCut-0/",
   std::string tracfilePath = "o2trac_its.root", std::string clusfilePath = "o2clus_its.root",
-  std::string kinefilePath = "sgn_1_Kine.root", std::string itsHitFilePath = "o2sim_HitsITS.root")
+  std::string kinefilePath = "sgn_1_Kine.root")
 {
   using Vertex = o2::dataformats::Vertex<o2::dataformats::TimeStamp<int>>;
   using namespace o2::dataformats;
@@ -262,12 +264,6 @@ GlobalInfo CheckVerticesSingle(
   mcTree->SetBranchAddress("MCTrack", &mcArr);
   MCEventHeader* eventHeader = nullptr;
   mcTree->SetBranchAddress("MCEventHeader.", &eventHeader);
-
-  // MC Hits
-  TFile* itsHitFile = TFile::Open((path + itsHitFilePath).data());
-  TTree* hitTree = (TTree*)itsHitFile->Get("o2sim");
-  std::vector<o2::itsmft::Hit>* hitArr = nullptr;
-  hitTree->SetBranchAddress("ITSHit", &hitArr);
 
   // Clusters
   TFile* clusFile = TFile::Open((path + clusfilePath).data());
@@ -294,57 +290,39 @@ GlobalInfo CheckVerticesSingle(
   // Process
   // Fill MC info
   auto nev{mcTree->GetEntriesFast()};
-  std::vector<std::vector<ParticleInfo>> info(nev);
   std::vector<std::array<double, 3>> simVerts;
   GlobalInfo globalInfo;
   globalInfo.globalRecoInfo = {0, 0, 0, 0., 0.};  // initialise all to zero
+  globalInfo.particleInfo.resize(nev);
   int prev_eventID = 0;
+  int nTracks = 0;
   for (auto n{0}; n < nev; ++n) {
     mcTree->GetEvent(n);
-    hitTree->GetEvent(n);
-    info[n].resize(mcArr->size());
+    globalInfo.particleInfo[n].resize(mcArr->size());
+    nTracks += mcArr->size();
     
     simVerts.push_back({eventHeader->GetX(), eventHeader->GetY(), eventHeader->GetZ()});
     globalInfo.simVertInfo.insert({(int) eventHeader->GetEventID() - 1,
                                     SimVertInfo{ eventHeader->GetNPrim(), 0, false,
                                                 (float) eventHeader->GetX(),
                                                 (float) eventHeader->GetY(),
-                                                (float) eventHeader->GetZ(), {}}});
+                                                (float) eventHeader->GetZ()}});
     
     for (unsigned int mcI{0}; mcI < mcArr->size(); ++mcI) {
       auto part = mcArr->at(mcI);
-      info[n][mcI].event = n;
-      info[n][mcI].pdg = part.GetPdgCode();
-      info[n][mcI].pt = part.GetPt();
-      info[n][mcI].phi = part.GetPhi();
-      info[n][mcI].eta = part.GetEta();
-      info[n][mcI].isPrimary = part.isPrimary();      
-    }
-    // now fill track info
-    std::map<int, TrackInfo>* trInfoPtr = &(globalInfo.simVertInfo[eventHeader->GetEventID() - 1].trackInfo);
-    
-    for (int hitI = 0; hitI < hitArr->size(); hitI++) {
-      o2::itsmft::Hit hit = hitArr->at(hitI);
-      int trackID = hit.GetTrackID();
-      int layer = gman->getLayer( hit.GetDetectorID() );
-      // find where trackID would fit in the map
-      std::map<int, TrackInfo>::iterator lowerBoundTrackID = trInfoPtr->lower_bound(trackID);
-      // check if key already exist, then lowerBoundTrackID->first == trackID
-      if (lowerBoundTrackID != trInfoPtr->end() && lowerBoundTrackID->first == trackID)
-        lowerBoundTrackID->second.nHits++;
-        // also increment maxLayer if further out
-        if ( layer > lowerBoundTrackID->second.maxLayer)
-          lowerBoundTrackID->second.maxLayer = layer;
-      else  // key does not exist yet, set it, add a hit and the momentum
-        trInfoPtr->insert(
-          lowerBoundTrackID,
-          std::pair<int, TrackInfo>(
-            trackID, TrackInfo{1, mcArr->at(trackID).GetPt(), mcArr->at(trackID).GetP(), layer }));
+      globalInfo.particleInfo[n][mcI].event = n;
+      globalInfo.particleInfo[n][mcI].pdg = part.GetPdgCode();
+      globalInfo.particleInfo[n][mcI].pt = part.GetPt();
+      globalInfo.particleInfo[n][mcI].pTot = part.GetP();
+      globalInfo.particleInfo[n][mcI].phi = part.GetPhi();
+      globalInfo.particleInfo[n][mcI].eta = part.GetEta();
+      globalInfo.particleInfo[n][mcI].isPrimary = part.isPrimary();      
     }
     if ((eventHeader->GetEventID() - prev_eventID) != 1)
       std::cout << "Event: " << eventHeader->GetEventID() << " not properly configured.\n";
     prev_eventID = eventHeader->GetEventID();
   }
+  std::cout << "Total number of tracks over all events: " << nTracks << std::endl;
 
   // Fill ROF info and complement MC info with cluster info
   std::vector<RofInfo> rofinfo;
@@ -353,36 +331,46 @@ GlobalInfo CheckVerticesSingle(
       continue;
     rofinfo.resize(clusROFRecords->size());
     std::cout << "Size of rofinfo now: " << rofinfo.size() << "\n";
+    int nClusters = 0;
+    int nInvalidClusters = 0;
     for (size_t rof{0}; rof < clusROFRecords->size(); ++rof) {
       rofinfo[rof].globalInfo = &globalInfo;  // make sure all point to the same one
-      for (int iClus{clusROFRecords->at(rof).getFirstEntry()}; iClus < clusROFRecords->at(rof).getFirstEntry() + clusROFRecords->at(rof).getNEntries(); ++iClus) {
+      nClusters += clusROFRecords->at(rof).getNEntries();
+      for (int iClus{clusROFRecords->at(rof).getFirstEntry()};
+          iClus < clusROFRecords->at(rof).getFirstEntry() + clusROFRecords->at(rof).getNEntries();
+          ++iClus) {
         auto lab = (clusLabArr->getLabels(iClus))[0];
-        if (!lab.isValid() || lab.getSourceID() != 0 || !lab.isCorrect())
+        if (!lab.isValid() || lab.getSourceID() != 0 || !lab.isCorrect()) {
+          nInvalidClusters++;
           continue;
+        }
 
         int trackID, evID, srcID;
         bool fake;
         lab.get(trackID, evID, srcID, fake);
-        if (evID < 0 || evID >= (int)info.size()) {
+        if (evID < 0 || evID >= (int)globalInfo.particleInfo.size()) {
           std::cout << "Cluster MC label eventID out of range" << std::endl;
           continue;
         }
-        if (trackID < 0 || trackID >= (int)info[evID].size()) {
+        if (trackID < 0 || trackID >= (int)globalInfo.particleInfo[evID].size()) {
           std::cout << "Cluster MC label trackID out of range" << std::endl;
           continue;
         }
-        info[evID][trackID].lab = lab; // seems redundant but we are going to copy these info and loosing the nice evt/tr_id ordering
+        globalInfo.particleInfo[evID][trackID].lab = lab; // seems redundant but we are going to copy these info and loosing the nice evt/tr_id ordering
         const CompClusterExt& c = (*clusArr)[iClus];
         auto layer = gman->getLayer(c.getSensorID());
-        info[evID][trackID].clusters |= 1 << layer;
-        info[evID][trackID].rofs[layer] = rof;
+        globalInfo.particleInfo[evID][trackID].clusters |= 1 << layer;
+        globalInfo.particleInfo[evID][trackID].rofs[layer] = rof;
+        globalInfo.particleInfo[evID][trackID].nClusters++;
       }
     }
+    std::cout << "Total number of (invalid) clusters over all events: ("
+              << nInvalidClusters << ") " << nClusters << std::endl;
   }
   //return;
 
-  for (size_t evt{0}; evt < info.size(); ++evt) {
-    auto& evInfo = info[evt];
+  for (size_t evt{0}; evt < globalInfo.particleInfo.size(); ++evt) {
+    auto& evInfo = globalInfo.particleInfo[evt];
     int ntrackable{0};
     int nusable{0};
     for (auto& part : evInfo) {
@@ -487,7 +475,6 @@ GlobalInfo CheckVerticesSingle(
 
   // close all files again
   kineFile->Close();
-  itsHitFile->Close();
   tracFile->Close();
   clusFile->Close();
 
@@ -507,6 +494,8 @@ void CheckLowMultVertices(
 
     std::vector<GlobalRecoInfo> globalRecoInfo;  // depends on lowMultBeamDistCut, i.e. will change
     GlobalInfo finalInfo;  // only for the largest (best) lowMultBeamDistCut
+    std::cout << "Total size of returns: " << sizeof(globalRecoInfo) / 1e6 << " MB, and "
+              << sizeof(finalInfo.particleInfo) / 1e6 << " MB, respectively." << std::endl;
     unsigned int iterCount = 0;
     for (float curr=min; curr <= max; curr+=step_size, iterCount++ ) {
       std::string path = parent_dir;
@@ -527,6 +516,7 @@ void CheckLowMultVertices(
       float eps = 1e-6;
       if ((max - curr - eps) < 0) finalInfo = verticesInfo;
     }
+    std::cout << "Size of ParticleInfo: " << sizeof(ParticleInfo) << std::endl;
     // now create the output file and the corresponding tuples
     std::string outDir = parent_dir;
     if (nBatches > 0) outDir += std::to_string(batchNo) + "/";
@@ -539,7 +529,7 @@ void CheckLowMultVertices(
     TNtuple* simVertInfoTuple = new TNtuple("simVertInfo", "Information on simulated vertices",
                                             "eventID:nContributors:nCells:nTracks:wasReco:x:y:z");
     TNtuple* trackInfoTuple = new TNtuple("trackInfo", "Information on simulated tracks",
-                                          "trackID:nHits:pT:totP:maxLayer");
+                                          "trackID:nClusters:pT:totP:maxLayer");
     TNtuple* recoVertInfoTuple = new TNtuple("recoVertInfo", "Information on reconstructed vertices",
                                             "eventID:nContributors:x:y:z");
 
@@ -551,16 +541,25 @@ void CheckLowMultVertices(
     }
     // Now fill totals for the largest (best) lowMultBeamDistCut
     for (const auto& [evtID, sVInfo] : finalInfo.simVertInfo) {
-      simVertInfoTuple->Fill( evtID, sVInfo.nContributors, sVInfo.nCells, sVInfo.trackInfo.size(),
+      simVertInfoTuple->Fill( evtID, sVInfo.nContributors, sVInfo.nCells,
+                              finalInfo.particleInfo[evtID].size(),
                               sVInfo.wasRecod, sVInfo.x, sVInfo.y, sVInfo.z);
-      
-      // for each simVert, we have a lot of tracks/hits to fill...
-      for (auto nHitIt = sVInfo.trackInfo.begin(); nHitIt != sVInfo.trackInfo.end(); nHitIt++) {
-        trackInfoTuple->Fill( (double) nHitIt->first, (double) nHitIt->second.nHits,
-                              nHitIt->second.pT, nHitIt->second.totMomentum,
-                              nHitIt->second.maxLayer );
+    }
+    int nClustersWritten = 0;
+    int nZeroClusterTracks = 0;
+    // Now fill the relevant particle/track/cluster info
+    for (int evID = 0; evID < finalInfo.particleInfo.size(); evID++) {
+      for (int trackID = 0; trackID < finalInfo.particleInfo[evID].size(); trackID++) {
+        auto pInfo = finalInfo.particleInfo[evID][trackID];
+        nClustersWritten += pInfo.nClusters;
+        nZeroClusterTracks += (pInfo.nClusters == 0);
+        if (pInfo.nClusters) {
+          trackInfoTuple->Fill(trackID, pInfo.nClusters, pInfo.pt, pInfo.pTot, pInfo.getMaxLayer());
+        }
       }
     }
+    std::cout << "Number of clusters written: " << nClustersWritten
+              << " and number of zero cluster tracks: " << nZeroClusterTracks << std::endl;
     // lastly, fill reco's info
     for (auto rVinfo : finalInfo.recoVertInfo ) {
       recoVertInfoTuple->Fill( rVinfo.eventID, rVinfo.nContributors,
