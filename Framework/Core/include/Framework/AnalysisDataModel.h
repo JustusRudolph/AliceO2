@@ -306,6 +306,29 @@ DECLARE_SOA_DYNAMIC_COLUMN(ITSClsSizeInLayer, itsClsSizeInLayer, //! Size of the
                              return (itsClusterSizes >> (layer * 4)) & 0xf;
                            });
 
+namespace extensions
+{
+using TPCTimeErrEncoding = o2::aod::track::extensions::TPCTimeErrEncoding;
+DECLARE_SOA_DYNAMIC_COLUMN(TPCDeltaTFwd, tpcDeltaTFwd, //! Delta Forward of track time in TPC time bis
+                           [](float timeErr, uint32_t trackType) -> float {
+                             if (!(trackType & TrackFlags::TrackTimeAsym)) {
+                               return TPCTimeErrEncoding::invalidValue;
+                             }
+                             TPCTimeErrEncoding enc;
+                             enc.encoding.timeErr = timeErr;
+                             return enc.getDeltaTFwd();
+                           });
+
+DECLARE_SOA_DYNAMIC_COLUMN(TPCDeltaTBwd, tpcDeltaTBwd, //! Delta Backward of track time in TPC time bis
+                           [](float timeErr, uint32_t trackType) -> float {
+                             if (!(trackType & TrackFlags::TrackTimeAsym)) {
+                               return TPCTimeErrEncoding::invalidValue;
+                             }
+                             TPCTimeErrEncoding p;
+                             p.encoding.timeErr = timeErr;
+                             return p.getDeltaTBwd();
+                           });
+} // namespace extensions
 } // namespace v001
 
 DECLARE_SOA_DYNAMIC_COLUMN(HasITS, hasITS, //! Flag to check if track has a ITS match
@@ -477,8 +500,8 @@ DECLARE_SOA_TABLE_FULL(StoredTracksExtra_000, "TracksExtra", "AOD", "TRACKEXTRA"
 DECLARE_SOA_TABLE_FULL_VERSIONED(StoredTracksExtra_001, "TracksExtra", "AOD", "TRACKEXTRA", 1, // On disk version of TracksExtra, version 1
                                  track::TPCInnerParam, track::Flags, track::ITSClusterSizes,
                                  track::TPCNClsFindable, track::TPCNClsFindableMinusFound, track::TPCNClsFindableMinusCrossedRows,
-                                 track::TPCNClsShared, track::TRDPattern, track::ITSChi2NCl,
-                                 track::TPCChi2NCl, track::TRDChi2, track::TOFChi2,
+                                 track::TPCNClsShared, track::v001::extensions::TPCDeltaTFwd<track::TrackTimeRes, track::Flags>, track::v001::extensions::TPCDeltaTBwd<track::TrackTimeRes, track::Flags>,
+                                 track::TRDPattern, track::ITSChi2NCl, track::TPCChi2NCl, track::TRDChi2, track::TOFChi2,
                                  track::TPCSignal, track::TRDSignal, track::Length, track::TOFExpMom,
                                  track::PIDForTracking<track::Flags>,
                                  track::IsPVContributor<track::Flags>,
@@ -1526,6 +1549,7 @@ DECLARE_SOA_COLUMN(PosZ, posZ, float);                       //! Z vertex positi
 DECLARE_SOA_COLUMN(T, t, float);                             //! Collision time relative to given bc in ns
 DECLARE_SOA_COLUMN(Weight, weight, float);                   //! MC weight
 DECLARE_SOA_COLUMN(ImpactParameter, impactParameter, float); //! Impact parameter for A-A
+DECLARE_SOA_COLUMN(EventPlaneAngle, eventPlaneAngle, float); //! Event plane angle for A-A
 DECLARE_SOA_DYNAMIC_COLUMN(GetGeneratorId, getGeneratorId,   //! The global generator ID which might have been assigned by the user
                            [](short generatorsID) -> int { return o2::mcgenid::getGeneratorId(generatorsID); });
 DECLARE_SOA_DYNAMIC_COLUMN(GetSubGeneratorId, getSubGeneratorId, //! A specific sub-generator ID in case the generator has some sub-generator logic
@@ -1535,7 +1559,7 @@ DECLARE_SOA_DYNAMIC_COLUMN(GetSourceId, getSourceId, //! The source ID to differ
 
 } // namespace mccollision
 
-DECLARE_SOA_TABLE(McCollisions, "AOD", "MCCOLLISION", //! MC collision table
+DECLARE_SOA_TABLE(McCollisions_000, "AOD", "MCCOLLISION", //! MC collision table
                   o2::soa::Index<>, mccollision::BCId,
                   mccollision::GeneratorsID,
                   mccollision::PosX, mccollision::PosY, mccollision::PosZ,
@@ -1544,7 +1568,18 @@ DECLARE_SOA_TABLE(McCollisions, "AOD", "MCCOLLISION", //! MC collision table
                   mccollision::GetGeneratorId<mccollision::GeneratorsID>,
                   mccollision::GetSubGeneratorId<mccollision::GeneratorsID>,
                   mccollision::GetSourceId<mccollision::GeneratorsID>);
+DECLARE_SOA_TABLE_VERSIONED(McCollisions_001, "AOD", "MCCOLLISION", 1, //! MC collision table with event plane
+                            o2::soa::Index<>, mccollision::BCId,
+                            mccollision::GeneratorsID,
+                            mccollision::PosX, mccollision::PosY, mccollision::PosZ,
+                            mccollision::T, mccollision::Weight,
+                            mccollision::ImpactParameter,
+                            mccollision::EventPlaneAngle,
+                            mccollision::GetGeneratorId<mccollision::GeneratorsID>,
+                            mccollision::GetSubGeneratorId<mccollision::GeneratorsID>,
+                            mccollision::GetSourceId<mccollision::GeneratorsID>);
 
+using McCollisions = McCollisions_000;
 using McCollision = McCollisions::iterator;
 
 namespace mcparticle
