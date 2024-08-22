@@ -545,6 +545,7 @@ void AODProducerWorkflowDPL::fillTrackTablesPerCollision(int collisionID,
     auto& sTrk = sTracks[collStrTrk.second];
     TrackExtraInfo extraInfo;
     extraInfo.itsChi2NCl = sTrk.mTopoChi2; // TODO: this is the total chi2 of adding the ITS clusters, the topology chi2 meaning might change in the future
+    extraInfo.itsClusterSizes = sTrk.getClusterSizes();
     addToTracksTable(tracksCursor, tracksCovCursor, sTrk.mMother, collisionID, aod::track::StrangeTrack);
     addToTracksExtraTable(tracksExtraCursor, extraInfo);
     mStrTrkIndices[collStrTrk.second] = mTableTrID;
@@ -1378,7 +1379,7 @@ void AODProducerWorkflowDPL::fillStrangenessTrackingTables(const o2::globaltrack
              sTrk.mMasses[1],
              sTrk.mMatchChi2,
              sTrk.mTopoChi2,
-             sTrk.mITSClusSize);
+             sTrk.getAverageClusterSize());
     } else if (sTrk.mPartType == dataformats::kStrkCascade) {
       cascCurs(mStrTrkIndices[sTrkID++],
                itsTableIdx,
@@ -1390,7 +1391,7 @@ void AODProducerWorkflowDPL::fillStrangenessTrackingTables(const o2::globaltrack
                sTrk.mMasses[1],
                sTrk.mMatchChi2,
                sTrk.mTopoChi2,
-               sTrk.mITSClusSize);
+               sTrk.getAverageClusterSize());
     } else {
       d3BodyCurs(mStrTrkIndices[sTrkID++],
                  itsTableIdx,
@@ -1402,7 +1403,7 @@ void AODProducerWorkflowDPL::fillStrangenessTrackingTables(const o2::globaltrack
                  sTrk.mMasses[1],
                  sTrk.mMatchChi2,
                  sTrk.mTopoChi2,
-                 sTrk.mITSClusSize);
+                 sTrk.getAverageClusterSize());
     }
   }
 }
@@ -1813,7 +1814,7 @@ void AODProducerWorkflowDPL::run(ProcessingContext& pc)
   auto tracksCursor = createTableCursor<o2::aod::StoredTracksIU>(pc);
   auto tracksCovCursor = createTableCursor<o2::aod::StoredTracksCovIU>(pc);
   auto tracksExtraCursor = createTableCursor<o2::aod::StoredTracksExtra>(pc);
-  auto tracksQACursor = createTableCursor<o2::aod::TrackQA>(pc);
+  auto tracksQACursor = createTableCursor<o2::aod::TracksQA>(pc);
   auto ambigTracksCursor = createTableCursor<o2::aod::AmbiguousTracks>(pc);
   auto ambigMFTTracksCursor = createTableCursor<o2::aod::AmbiguousMFTTracks>(pc);
   auto ambigFwdTracksCursor = createTableCursor<o2::aod::AmbiguousFwdTracks>(pc);
@@ -2985,7 +2986,7 @@ DataProcessorSpec getAODProducerWorkflowSpec(GID::mask_t src, bool enableSV, boo
     OutputForTable<Calos>::spec(),
     OutputForTable<CaloTriggers>::spec(),
     OutputForTable<CPVClusters>::spec(),
-    OutputForTable<Origin>::spec(),
+    OutputForTable<Origins>::spec(),
     OutputSpec{"TFN", "TFNumber"},
     OutputSpec{"TFF", "TFFilename"},
     OutputSpec{"AMD", "AODMetadataKeys"},
