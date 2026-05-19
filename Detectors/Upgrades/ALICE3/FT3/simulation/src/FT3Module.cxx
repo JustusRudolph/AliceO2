@@ -553,8 +553,7 @@ void FT3Module::create_layout_staveGeo(double mZ, int layerNumber, int direction
   // each entry is a vector, where each entry is the number of modules of that stack height
   std::vector<std::vector<unsigned>> nSensorStackCountPerStave(
     staveConfig.x_midpoints.size(),
-    std::vector<unsigned>(Constants::kSensorsPerStack.size(), 0)
-  );
+    std::vector<unsigned>(Constants::kSensorsPerStack.size(), 0));
   std::vector<unsigned> nSensorStackTotal(Constants::kSensorsPerStack.size(), 0);
   for (unsigned i_stave = 0; i_stave < staveConfig.x_midpoints.size(); i_stave++) {
     y_positionsPosNeg.emplace_back(PosNegPositionTypes{PositionTypes{}, PositionTypes{}});
@@ -669,23 +668,17 @@ void FT3Module::create_layout_staveGeo(double mZ, int layerNumber, int direction
 
     // now add the sensor positions on the stave
     for (unsigned i_kSens = 0; i_kSens < Constants::kSensorsPerStack.size(); i_kSens++) {
-      unsigned nModulesCurr = y_positionsPosNeg.back().first.size()
-                            + y_positionsPosNeg.back().second.size();
+      unsigned nModulesCurr = y_positionsPosNeg.back().first.size() + y_positionsPosNeg.back().second.size();
       fill_stave(y_positionsPosNeg.back(), Rin, Rout, x_left,
                  Constants::kSensorsPerStack[i_kSens], y_ranges,
                  absAllowedYRange);
-      unsigned nModulesAdded = y_positionsPosNeg.back().first.size()
-                             + y_positionsPosNeg.back().second.size()
-                             - nModulesCurr;
+      unsigned nModulesAdded = y_positionsPosNeg.back().first.size() + y_positionsPosNeg.back().second.size() - nModulesCurr;
       nSensorStackCountPerStave[i_stave][i_kSens] = nModulesAdded;
       nSensorStackTotal[i_kSens] += nModulesAdded;
     }
-    std::string moduleDebugStr = "Module size counts for layer " + std::to_string(layerNumber)
-                             + " in direction " + std::to_string(direction) + ":\n";
+    std::string moduleDebugStr = "Module size counts for layer " + std::to_string(layerNumber) + " in direction " + std::to_string(direction) + ":\n";
     for (unsigned i_kSens = 0; i_kSens < Constants::kSensorsPerStack.size(); i_kSens++) {
-      moduleDebugStr += "\t" + std::to_string(nSensorStackCountPerStave[i_stave][i_kSens])
-                     + " modules with " + std::to_string(Constants::kSensorsPerStack[i_kSens])
-                     + " sensors stacked\n";
+      moduleDebugStr += "\t" + std::to_string(nSensorStackCountPerStave[i_stave][i_kSens]) + " modules with " + std::to_string(Constants::kSensorsPerStack[i_kSens]) + " sensors stacked\n";
     }
     LOG(debug) << moduleDebugStr;
   }
@@ -693,9 +686,7 @@ void FT3Module::create_layout_staveGeo(double mZ, int layerNumber, int direction
     "Total module size counts for layer " + std::to_string(layerNumber) +
     " in direction " + std::to_string(direction) + ":\n";
   for (unsigned i_kSens = 0; i_kSens < Constants::kSensorsPerStack.size(); i_kSens++) {
-    totalModuleInfoStr += "\t" + std::to_string(nSensorStackTotal[i_kSens])
-                        + " modules with " + std::to_string(Constants::kSensorsPerStack[i_kSens])
-                        + " sensors stacked\n";
+    totalModuleInfoStr += "\t" + std::to_string(nSensorStackTotal[i_kSens]) + " modules with " + std::to_string(Constants::kSensorsPerStack[i_kSens]) + " sensors stacked\n";
   }
   LOG(info) << totalModuleInfoStr;
 
