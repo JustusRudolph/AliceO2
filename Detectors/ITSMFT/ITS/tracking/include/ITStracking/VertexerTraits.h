@@ -112,6 +112,9 @@ class VertexerTraits
         elem = element;
       }
     }
+    std::cout << "Dominant eventID: " << elem.getEventID() << " with " << maxCount
+              << " number of counts. TrackID and SourceID: " << elem.getTrackID() << " & "
+              << elem.getSourceID();
     return std::make_pair(elem, static_cast<float>(maxCount) / elements.size());
   }
 

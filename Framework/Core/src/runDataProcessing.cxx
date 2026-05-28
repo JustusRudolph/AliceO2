@@ -2819,6 +2819,7 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& workflow,
 
   for (auto& dp : workflow) {
     workflowHashA += hash_fn(dp.name);
+    std::cout << "name of workflow: " << dp.name << std::endl; 
   }
 
   for (auto& dp : workflow) {

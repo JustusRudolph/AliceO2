@@ -66,18 +66,24 @@ struct ParticleInfo {
   }
 };
 
+struct RecoTrackInfo {
+  int trackID;         // ID of track
+};
+
 struct SimVertInfo {
   int nContributors;                   // (likely) number of tracklets associated to vertex
   int nCells;                          // number of cells associated to vertex
   bool wasRecod;                       // whether the vertex was reconstructed
   float x, y, z;                       // position of the vertex
+  int iROF;                            // in which ROF this vertex was simmed
 };
 
 struct RecoVertInfo {
-  int eventID;        // ID of event (-1 if fake)
-  int nContributors;  // (likely) number of cells associated to vertex
-  float x, y, z;      // position of the vertex
-  int iROF;           // in which ROF this vertex was reco'd
+  int eventID;                           // ID of event (-1 if fake)
+  int nContributors;                     // (likely) number of cells associated to vertex
+  float x, y, z;                         // position of the vertex
+  int iROF;                              // in which ROF this vertex was reco'd
+  std::vector<RecoTrackInfo> trackInfo;  // info about all reconstructed tracks
 };
 
 struct GlobalRecoInfo {  // this is only really for lowMultBeamDistCut changes
@@ -242,7 +248,7 @@ o2::MCCompLabel getMainLabel(std::vector<o2::MCCompLabel>& labs)
 GlobalInfo CheckVerticesSingle(
   const int dumprof = -1, std::string path = "exp300-0-0_1-0.05/lowMultBeamDistCut-0/",
   std::string tracfilePath = "o2trac_its.root", std::string clusfilePath = "o2clus_its.root",
-  std::string kinefilePath = "sgn_1_Kine.root")
+  std::string kinefilePath = "sgn_1_Kine.root", bool oldTracStandard=false)
 {
   using Vertex = o2::dataformats::Vertex<o2::dataformats::TimeStamp<int>>;
   using namespace o2::dataformats;
@@ -287,8 +293,18 @@ GlobalInfo CheckVerticesSingle(
   recTree->SetBranchAddress("VerticesROF", &recVerROFArr);
   std::vector<o2::MCCompLabel>* recLabelsArr = nullptr;
   recTree->SetBranchAddress("ITSVertexMCTruth", &recLabelsArr);
+
+  std::vector<ROFRecord>* recTrkROFArr = nullptr;
+  recTree->SetBranchAddress("ITSTracksROF", &recTrkROFArr);
+  std::vector<o2::MCCompLabel>* trackLabelsArr = nullptr;
+  recTree->SetBranchAddress("ITSTrackMCTruth", &trackLabelsArr);
+
+  // Instance of particle identification
+  static TDatabasePDG* pid = TDatabasePDG::Instance();
+
   // Process
   // Fill MC info
+  std::cout << "Filling MC info.\n";
   auto nev{mcTree->GetEntriesFast()};
   std::vector<std::array<double, 3>> simVerts;
   GlobalInfo globalInfo;
@@ -302,11 +318,13 @@ GlobalInfo CheckVerticesSingle(
     nTracks += mcArr->size();
     
     simVerts.push_back({eventHeader->GetX(), eventHeader->GetY(), eventHeader->GetZ()});
+    std::cout << "EventID: " << eventHeader->GetEventID() - 1 << " with nPrim: "
+              << eventHeader->GetNPrim() << "\n";
     globalInfo.simVertInfo.insert({(int) eventHeader->GetEventID() - 1,
                                     SimVertInfo{ eventHeader->GetNPrim(), 0, false,
                                                 (float) eventHeader->GetX(),
                                                 (float) eventHeader->GetY(),
-                                                (float) eventHeader->GetZ()}});
+                                                (float) eventHeader->GetZ(), 0}});
     
     for (unsigned int mcI{0}; mcI < mcArr->size(); ++mcI) {
       auto part = mcArr->at(mcI);
@@ -368,11 +386,11 @@ GlobalInfo CheckVerticesSingle(
               << nInvalidClusters << ") " << nClusters << std::endl;
   }
   //return;
-
   for (size_t evt{0}; evt < globalInfo.particleInfo.size(); ++evt) {
     auto& evInfo = globalInfo.particleInfo[evt];
     int ntrackable{0};
     int nusable{0};
+    int nNotInDB{0};
     for (auto& part : evInfo) {
       if (part.clusters & (1 << 0) && part.clusters & (1 << 1) && part.clusters & (1 << 2)) {
         ++ntrackable;
@@ -384,10 +402,18 @@ GlobalInfo CheckVerticesSingle(
           bool fake;
           part.lab.get(trackID, evID, srcID, fake);
           rofinfo[part.rofs[0]].simVerts[evID] = simVerts[evID];
-          globalInfo.simVertInfo[evID].nCells++;  // increment number of contributors
+          globalInfo.simVertInfo[evID].iROF = part.rofs[0];  // do reverse association too
+          TParticlePDG* particle = pid->GetParticle(part.pdg);
+          if (particle) {  // only add trackable (charged) cells
+            if (particle->Charge())  // some particles are null, so not in database
+              // std::cout << "non-null\n";
+              globalInfo.simVertInfo[evID].nCells++;  // increment number of contributors
+          }
+          else {/*std::cout << "PDG Code " << part.pdg << " not in database.\n";*/ nNotInDB++; }
         }
       }
     }
+    //std::cout << "Out of " << nusable << " usable, have " << nNotInDB << " not in database.\n";
   }
 
   // Reco vertices processing
@@ -397,29 +423,50 @@ GlobalInfo CheckVerticesSingle(
     }
     std::cout << "Reco frame " << frame << " with size of recVerROFArr: " << recVerROFArr->size() << "\n";
     // loop on rof records
-    int contLabIdx{0};
+    int contLabIdx{0}, contTrkLabIdx{0};
+    std::set<int> recodIDs;
+    // std::cout << "Size of recLabelsArr: " << recLabelsArr->size() << "\n";
+    // std::cout << "Size of trackLabelsArr: " << trackLabelsArr->size() << "\n";
     for (size_t iRecord{0}; iRecord < recVerROFArr->size(); ++iRecord) {
       auto& rec = recVerROFArr->at(iRecord);
+      auto& recTracks = recTrkROFArr->at(iRecord);
       auto verStartIdx = rec.getFirstEntry(), verSize = rec.getNEntries();
+      auto trksStartIdx = recTracks.getFirstEntry(), trksSize = recTracks.getNEntries();
       rofinfo[iRecord].id = iRecord;
       rofinfo[iRecord].vertLabels.resize(verSize);
       int vertCounter{0};
       for (int iVertex{verStartIdx}; iVertex < verStartIdx + verSize; ++iVertex, ++vertCounter) {
         auto vert = recVerArr->at(iVertex);
+        o2::MCCompLabel label;
         rofinfo[iRecord].recoVerts.push_back(vert);
-        for (int ic{0}; ic < vert.getNContributors(); ++ic, ++contLabIdx) {
-          rofinfo[iRecord].vertLabels[vertCounter].push_back(recLabelsArr->at(contLabIdx));
-          // std::cout << "Pushed " << rofinfo[iRecord].vertLabels[vertCounter].back() << " at position " << rofinfo[iRecord].vertLabels[vertCounter].size() << std::endl;
+        if (oldTracStandard) {  // need to go through all contributors and get main for old standard
+          for (int ic{0}; ic < vert.getNContributors(); ++ic, ++contLabIdx) {
+            rofinfo[iRecord].vertLabels[vertCounter].push_back(recLabelsArr->at(contLabIdx));
+            // std::cout << "Pushed " << rofinfo[iRecord].vertLabels[vertCounter].back() << " at position " << rofinfo[iRecord].vertLabels[vertCounter].size() << std::endl;
+          }
+          label = getMainLabel(rofinfo[iRecord].vertLabels[vertCounter]);
+        } else {
+          label = recLabelsArr->at(iVertex);
         }
-        auto label = getMainLabel(rofinfo[iRecord].vertLabels[vertCounter]);
         int eventID = label.getEventID();
+        std::cout << "Reconstructed vertex with label: " << eventID << " and TrackID, SourceID: "
+                  << label.getTrackID() << " & " << label.getSourceID() << " in rof " << iRecord << "\n";
         if (!label.isSet()) {
           eventID = -1;
         }
         globalInfo.recoVertInfo.push_back(
-          RecoVertInfo{ eventID, vert.getNContributors(), vert.getX(), vert.getY(), vert.getZ(), 0 } );
+          RecoVertInfo{ eventID, vert.getNContributors(), vert.getX(), vert.getY(),
+                        vert.getZ(), (int) iRecord });
+      }
+      for (int iTrk = trksStartIdx; iTrk < trksStartIdx + trksSize; iTrk++, contTrkLabIdx++) {
+        auto label = trackLabelsArr->at(contTrkLabIdx);
+        if (label.isSet() && recodIDs.find(label.getEventID()) == recodIDs.end())
+          recodIDs.insert(label.getEventID());
       }
     }
+    // for (auto iter = recodIDs.begin(); iter != recodIDs.end(); iter++)
+      // std::cout << "Tracks exist with eventID " << *iter << "\n";
+    // std::cout << "Number of total contributors: " << contLabIdx << "\n";
   }
   // Epilog
   LOGP(info, "ROF inspection summary");
@@ -484,7 +531,7 @@ GlobalInfo CheckVerticesSingle(
 void CheckLowMultVertices(
   const int dumprof = -1, const float min=0.1, const float max=0.1, const float step_size = 0.05,
   const int nBatches = -1, std::string parent_dir = "exp100-0-1-0_05/", std::string tracfile = "o2trac_its.root",
-  std::string clusfile = "o2clus_its.root", std::string kinefile = "sgn_1_Kine.root")
+  std::string clusfile = "o2clus_its.root", std::string kinefile = "o2sim_Kine.root")
 {
   // if nBatches is unset (-1), then use just parent dir. If set, the parent dir contains
   // a number (nBatches) of datasets, each just numbered from 0 to nBatches+1
@@ -502,7 +549,7 @@ void CheckLowMultVertices(
       // add batch number to parent dir if we have batch system
       if (nBatches > 0) path += std::to_string(batchNo) + "/";
 
-      path += "lowMultBeamDistCut-" + std::to_string(iterCount) + "/";
+      // path += "lowMultBeamDistCut-" + std::to_string(iterCount) + "_CCC-16/";
       GlobalInfo verticesInfo = CheckVerticesSingle(dumprof, path, tracfile, clusfile, kinefile);
 
       std::cout << "Size of globalInfo: " << verticesInfo.simVertInfo.size() << " and " <<
@@ -527,11 +574,11 @@ void CheckLowMultVertices(
                                             "eff:purity");
 
     TNtuple* simVertInfoTuple = new TNtuple("simVertInfo", "Information on simulated vertices",
-                                            "eventID:nContributors:nCells:nTracks:wasReco:x:y:z");
+                                            "eventID:nContributors:nCells:nTracks:wasReco:x:y:z:iROF");
     TNtuple* trackInfoTuple = new TNtuple("trackInfo", "Information on simulated tracks",
-                                          "trackID:nClusters:pT:totP:maxLayer");
+                                          "trackID:PID:nClusters:pT:totP:maxLayer");
     TNtuple* recoVertInfoTuple = new TNtuple("recoVertInfo", "Information on reconstructed vertices",
-                                            "eventID:nContributors:x:y:z");
+                                            "eventID:nContributors:x:y:z:iROF");
 
     // First fill averages wrt lowMultBeamDistCut
     for ( int iLMBDC = 0; iLMBDC < globalRecoInfo.size(); iLMBDC++ ) {
@@ -543,7 +590,7 @@ void CheckLowMultVertices(
     for (const auto& [evtID, sVInfo] : finalInfo.simVertInfo) {
       simVertInfoTuple->Fill( evtID, sVInfo.nContributors, sVInfo.nCells,
                               finalInfo.particleInfo[evtID].size(),
-                              sVInfo.wasRecod, sVInfo.x, sVInfo.y, sVInfo.z);
+                              sVInfo.wasRecod, sVInfo.x, sVInfo.y, sVInfo.z, sVInfo.iROF);
     }
     int nClustersWritten = 0;
     int nZeroClusterTracks = 0;
@@ -554,7 +601,8 @@ void CheckLowMultVertices(
         nClustersWritten += pInfo.nClusters;
         nZeroClusterTracks += (pInfo.nClusters == 0);
         if (pInfo.nClusters) {
-          trackInfoTuple->Fill(trackID, pInfo.nClusters, pInfo.pt, pInfo.pTot, pInfo.getMaxLayer());
+          trackInfoTuple->Fill(trackID, pInfo.pdg, pInfo.nClusters,
+                               pInfo.pt, pInfo.pTot, pInfo.getMaxLayer());
         }
       }
     }
@@ -563,7 +611,7 @@ void CheckLowMultVertices(
     // lastly, fill reco's info
     for (auto rVinfo : finalInfo.recoVertInfo ) {
       recoVertInfoTuple->Fill( rVinfo.eventID, rVinfo.nContributors,
-                               rVinfo.x, rVinfo.y, rVinfo.z );
+                               rVinfo.x, rVinfo.y, rVinfo.z, rVinfo.iROF );
     }
     // write the tuples and file
     // globalRecoInfoTuple->Write();

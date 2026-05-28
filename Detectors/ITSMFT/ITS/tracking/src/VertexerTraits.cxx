@@ -406,6 +406,7 @@ void VertexerTraits::computeVertices(const int iteration)
 #ifdef VTX_DEBUG
   std::vector<std::vector<ClusterLines>> dbg_clusLines(mTimeFrame->getNrof());
 #endif
+  LOGP( info, "Number of ROFs in timeFrame: {}", mTimeFrame->getNrof() );
   std::vector<int> noClustersVec(mTimeFrame->getNrof(), 0);
   for (int rofId{0}; rofId < mTimeFrame->getNrof(); ++rofId) {
     if (iteration && (int)mTimeFrame->getPrimaryVertices(rofId).size() > mVrtParams[iteration].vertPerRofThreshold) {
@@ -524,9 +525,23 @@ void VertexerTraits::computeVertices(const int iteration)
         if (mTimeFrame->hasMCinformation()) {
           std::vector<o2::MCCompLabel> labels;
           for (auto& index : mTimeFrame->getTrackletClusters(rofId)[iCluster].getLabels()) {
-            labels.push_back(mTimeFrame->getLinesLabel(rofId)[index]); // then we can use nContributors from vertices to get the labels
+            auto label = mTimeFrame->getLinesLabel(rofId)[index];
+            labels.push_back(label); // then we can use nContributors from vertices to get the labels
+            // if (label.getEventID() < 100 && label.getEventID() > 10) std::cout << "have label with evID " << label.getEventID() << "\n";
           }
-          polls.push_back(computeMain(labels));
+          auto mainLabel = computeMain(labels);
+          std::cout << " in rof " << rofId << "\n";
+          polls.push_back(mainLabel);
+          if (std::find_if(labels.begin(), labels.end(), [](o2::MCCompLabel lab)
+              { return lab.getEventID() == 99; }) != labels.end()) {
+
+            unsigned n99s = std::count_if(labels.begin(), labels.end(), [](o2::MCCompLabel lab)
+                                          { return lab.getEventID() == 99; });
+            unsigned nMaxs = (unsigned) (mainLabel.second * labels.size());
+            std::cout << "Number of 99s: " << n99s << ", and number of max value ("
+                      << mainLabel.first.getEventID() << "): " << nMaxs << "\n";
+          }
+            
         }
       }
     }
@@ -590,6 +605,7 @@ void VertexerTraits::computeVerticesInRof(int rofId,
                                           std::vector<o2::MCCompLabel>* labels,
                                           const int iteration)
 {
+  LOGP( info, "Evaluating computeVerticesInRof.");
   int foundVertices{0};
   auto nsigmaCut{std::min(mVrtParams[iteration].vertNsigmaCut * mVrtParams[iteration].vertNsigmaCut * (mVrtParams[iteration].vertRadiusSigma * mVrtParams[iteration].vertRadiusSigma + mVrtParams[iteration].trackletSigma * mVrtParams[iteration].trackletSigma), 1.98f)};
   const int numTracklets{static_cast<int>(lines.size())};
